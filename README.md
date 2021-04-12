@@ -60,5 +60,5 @@ Monitoring and evaluation system of open source ecosystem
 - Optimize data crawling and code download performance
 
 # Contact
-- Email:jiangsha1007@sjtu.edu.cn  
-- Wechat:jiangxxs Remarks:MOOSE
+- Email: b-x-zhao@sjtu.edu.cn, jiangsha1007@sjtu.edu.cn
+- Wechat: zbx15821902609, jiangxxs Remarks:MOOSE
