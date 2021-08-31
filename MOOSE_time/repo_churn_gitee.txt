@@ -1,0 +1,2 @@
+mindspore/mindspore	8649239
+openeuler/kernel	7696525
