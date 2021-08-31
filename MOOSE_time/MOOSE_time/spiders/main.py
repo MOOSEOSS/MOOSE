@@ -38,9 +38,10 @@ class MOOSE_TIMESpider(scrapy.Spider):
 
     def __init__(self, repo=None, *args, **kwargs):
         super(MOOSE_TIMESpider, self).__init__(*args, **kwargs)
-    client = InfluxDBClient('106.52.93.154', 8086, 'moose', 'moose', 'moose')
-    #client.query("drop measurement moose_issue_comment")
-    #client.query("delete from  moose_issue_comment where oss_id='74175805'")
+
+    client = InfluxDBClient('ip:ip:ip:ip', 8086, 'username', 'password', 'dbname')################################################################
+    #client.query("drop measurement moose_issue")
+    #client.query("delete from  moose_pull where community_id=24")
     #exit(0)
     '''
     client.query("drop measurement moose_index")
@@ -98,36 +99,39 @@ class MOOSE_TIMESpider(scrapy.Spider):
 
 
     scrapyed_list = []
-    handle_httpstatus_list = [404, 500]
+    handle_httpstatus_list = [401, 404, 500]
     oss_event_id = dict()
     community_id = dict()
+    early_date = "2013-08-01"#“2020-05-01”
+    fmt = '%Y-%m-%d'
+    early_date = datetime.datetime.strptime(str(early_date), fmt)
+
     dbObject = dbHandle()
     cursor = dbObject.cursor()
-    # get repo from monitor list and get last event/issue/pr/commit  id
-    #cursor.execute("select oss_name, oss_id, community_id from moose_community_list where oss_id='74175805'")
-    cursor.execute("select oss_name, oss_id, community_id from moose_community_list ")
+    with open("repo_churn_github.txt", "r") as f:   #repo_test_github.txt
+        for line in f.readlines():
+            line = line.strip('\n')  # 去掉列表中每一个元素的换行符
+            oss_id = int(line.split('\t')[1])
+            oss_name = line.split('\t')[0]
 
-    results = cursor.fetchall()
-    for result in results:
-        oss_id = result[1]
-        oss_event_id.update({oss_id: []})
-        scrapyed_list.append("https://api.github.com/repos/" + result[0])
-        cursor.execute("select event_id, issue_id, pullrequest_id, commit_time, comment_id, issue_comment_id, fork_id from moose_event_id where oss_id='" + str(oss_id) + "'")
-        last_oss_event_id = cursor.fetchone()
-        if last_oss_event_id != None and len(last_oss_event_id)>0:
-            for per_last_id in last_oss_event_id:
-                if per_last_id is None or per_last_id=='':
-                    per_last_id = 0
-                oss_event_id[oss_id].append(per_last_id)
-        else:
-            cursor.execute("insert into  moose_event_id  (oss_id) values ('" + str( oss_id) + "')")
-            dbObject.commit()
-            for i in range(6):
-                oss_event_id[oss_id].append(0)
-        community_id[result[1]] = result[2]
-    print(oss_event_id)
-    repo_index = 0
-    start_urls = [scrapyed_list[0]]
+            oss_event_id.update({oss_id: []})
+            scrapyed_list.append("https://api.github.com/repos/" + oss_name)
+            cursor.execute("select event_id, issue_id, pullrequest_id, commit_time, comment_id, issue_comment_id, fork_id from moose_event_id where oss_id='" + str(oss_id) + "'")
+            last_oss_event_id = cursor.fetchone()
+            if last_oss_event_id != None and len(last_oss_event_id)>0:
+                for per_last_id in last_oss_event_id:
+                    if per_last_id is None or per_last_id=='':
+                        per_last_id = 0
+                    oss_event_id[oss_id].append(per_last_id)
+            else:
+                cursor.execute("insert into  moose_event_id  (oss_id) values ('" + str( oss_id) + "')")
+                dbObject.commit()
+                for i in range(7):
+                    oss_event_id[oss_id].append(0)
+            community_id[oss_id] = 31
+    repo_index = len(scrapyed_list)-1
+
+    start_urls = [scrapyed_list[repo_index]]
     #start_urls = ['https://api.github.com/repos/istio/istio']
 
     def parse(self, response):
@@ -149,33 +153,39 @@ class MOOSE_TIMESpider(scrapy.Spider):
             yield scrapy.Request(issues_comment_url, meta={"oss_id": oss_id}, callback=self.parse_issue_comment, headers=getHeader())
 
             # pulls data crawl
-            pulls_url = repos_data["pulls_url"][0:-9] + "?state=all&sort=created&direction=desc&per_page=100&page=5"
+            pulls_url = repos_data["pulls_url"][0:-9] + "?state=all&sort=created&direction=desc&per_page=100"
             yield scrapy.Request(pulls_url, meta={"oss_id": oss_id, "pull_url": repos_data["pulls_url"][0:-9]}, callback=self.parse_pullrequest, headers=getHeader())
 
             # commit data crawl
-            commit_url = repos_data['commits_url'][0:-6] + "?sort=created&direction=desc&per_page=100&per_page=100"
+            commit_url = repos_data['commits_url'][0:-6] + "?sort=created&direction=desc&per_page=100"
             yield scrapy.Request(commit_url, meta={"oss_id": oss_id}, callback=self.parse_commit, headers=getHeader())
 
             # commit comment data crawl
+
             commit_comment_url = repos_data["comments_url"][0:-9] + "?page=1000&per_page=100"
-            yield scrapy.Request(commit_comment_url, meta={"oss_id": oss_id, "commit_comment_url": repos_data["comments_url"][0:-9]}, callback=self.parse_commit_comment, headers=getHeader())
+            commit_comment_html = requests.get(commit_comment_url, headers=getHeader(), verify=False)
+            commit_comment_header = commit_comment_html.headers
+            listLink_prev_url = re.findall(r'(?<=<).[^<]*(?=>; rel=\"prev)', str(commit_comment_header))
+            if len(listLink_prev_url) > 0:
+                yield scrapy.Request(listLink_prev_url[0], meta={"oss_id": oss_id, "commit_comment_url": repos_data["comments_url"][0:-9]}, callback=self.parse_commit_comment, headers=getHeader())
 
             # index data crawl
-            event_url = repos_data["events_url"]
-            yield scrapy.Request(event_url, meta={"oss_id": oss_id}, callback=self.parse_event, headers=getHeader())
+            #event_url = repos_data["events_url"]
+            #yield scrapy.Request(event_url, meta={"oss_id": oss_id}, callback=self.parse_event, headers=getHeader())
 
             # fork data crawl
             fork_url = repos_data["forks_url"]
             yield scrapy.Request(fork_url, meta={"oss_id": oss_id}, callback=self.parse_fork, headers=getHeader())
 
             #star data crawl
-            #star_url = repos_data['stargazers_url']+"?sort=starred_at&direction=desc&per_page=100"
-            #yield scrapy.Request(star_url, meta={"oss_id": oss_id}, callback=self.parse_star, headers=getHeader2())
+            star_url = repos_data['stargazers_url']+"?sort=starred_at&direction=desc&per_page=100"
+            yield scrapy.Request(star_url, meta={"oss_id": oss_id}, callback=self.parse_star, headers=getHeader2())
         except:
             pass
+
         finally:
-            self.repo_index = self.repo_index + 1
-            if self.repo_index <= len(self.scrapyed_list) - 1:
+            self.repo_index = self.repo_index - 1
+            if self.repo_index >=0:
                 yield scrapy.Request(self.scrapyed_list[self.repo_index], meta={"is_first": 1}, callback=self.parse, headers=getHeader())
 
     def parse_issue(self, response):
@@ -195,16 +205,22 @@ class MOOSE_TIMESpider(scrapy.Spider):
                     update_sql = "update moose_event_id set issue_id = %s , issue_time= %s where oss_id=%s"
                     self.cursor.execute(update_sql, (str(issue_id_last), str(issue_time_last), str(oss_id)))
                     self.dbObject.commit()
-                except:
-                    pass
+                except Exception as ex:
+                    print(203)
+                    print(ex)
+
         finish = 0
         for repos_per_data in repos_data:
             issue_id_current = repos_per_data['id']
             if int(self.oss_event_id[oss_id][1]) != 0 and int(self.oss_event_id[oss_id][1]) >= int(issue_id_current):
-                pass
                 finish = 1
                 break
+            if 'pull_request' in repos_per_data:
+                continue
             create_time = repos_per_data['created_at']
+            d1 = datetime.datetime.strptime(str(create_time[0:10]), self.fmt)
+            if d1 < self.early_date:
+                break
             title = repos_per_data['title']
             issue_body = repos_per_data['body']
             if issue_body is None:
@@ -239,7 +255,7 @@ class MOOSE_TIMESpider(scrapy.Spider):
                 core_issue = 0
             issue_comment_count = repos_per_data['comments']
             #获取number
-            number = repos_per_data['number']
+            number = str(repos_per_data['number'])
             #获取labels
             labels_str = ''
             labels = repos_per_data['labels']
@@ -250,13 +266,19 @@ class MOOSE_TIMESpider(scrapy.Spider):
             if issue_comment_count is None:
                 issue_comment_count = 0
             user_id = repos_per_data['user']['id']
+            user_login = repos_per_data['user']['login']
             # statistic user
-            user_exit = self.is_user_exit(repos_per_data['user']['id'])
-            if (user_exit == 1):
-                pass
-            else:
-                owner_url = repos_per_data['user']['url']
-                yield scrapy.Request(owner_url, meta={"user_type": issue_user_type, "oss_id": oss_id}, callback=self.user_parse, headers=getHeader())
+
+            # user_exit = self.is_user_exit(repos_per_data['user']['id'])
+            # if (user_exit == 1):
+            #     User_Info_Repo_item = MOOSEUserRepo()
+            #     User_Info_Repo_item['user_id'] = repos_per_data['user']['id']
+            #     User_Info_Repo_item['oss_id'] = oss_id
+            #     User_Info_Repo_item['user_type'] = issue_user_type
+            #     yield User_Info_Repo_item
+            # else:
+            #     owner_url = repos_per_data['user']['url']
+            #     yield scrapy.Request(owner_url, meta={"user_type": issue_user_type, "oss_id": oss_id}, callback=self.user_parse, headers=getHeader())
             body = [
                 {
                     "measurement": "moose_issue",
@@ -275,13 +297,14 @@ class MOOSE_TIMESpider(scrapy.Spider):
                         "issue_comment_count": issue_comment_count,
                         "close_time": close_time,
                         "user_id": user_id,
-                        "labels": labels_str
+                        "labels": labels_str,
+                        "user_name":user_login
                     },
                 }
             ]
             res = self.client.write_points(body)
         if finish != 1:
-            listLink_next_url = re.findall(r'(?<=<).[^<]*(?=>; rel=\"next)', str(repos_header))
+            listLink_next_url = re.findall(r'(?<=<).[^<]*(?=>; rel=\"next)', str(repos_header)) #匹配“<”后面,“>;rel='next”前面的字符串,“.”表示任意非换行字符,“[^<]”表示任意非"<"的字符
             if len(listLink_next_url) > 0:
                 yield scrapy.Request(listLink_next_url[0], meta={"is_first": 2, "oss_id": oss_id}, callback=self.parse_issue, headers=getHeader())
 
@@ -302,17 +325,20 @@ class MOOSE_TIMESpider(scrapy.Spider):
                     update_sql = "update moose_event_id set issue_comment_id = %s , issue_comment_time= %s where oss_id=%s"
                     self.cursor.execute(update_sql, (str(issue_comment_id_last), str(issue_comment_time_last), str(oss_id)))
                     self.dbObject.commit()
-                except:
-                    pass
+                except Exception as ex:
+                    print(ex)
         finish = 0
         sid = SentimentIntensityAnalyzer()
         for repos_per_data in repos_data:
             issue_comment_id_current = repos_per_data['id']
             if int(self.oss_event_id[oss_id][5]) != 0 and int(self.oss_event_id[oss_id][5]) >= int(issue_comment_id_current):
-                pass
                 finish = 1
                 break
             create_time = repos_per_data['created_at']
+            d1 = datetime.datetime.strptime(str(create_time[0:10]), self.fmt)
+            if d1 < self.early_date:
+                finish = 1
+                break
             issue_comment_body = repos_per_data['body']
             if issue_comment_body is None:
                 issue_comment_body = ''
@@ -329,6 +355,7 @@ class MOOSE_TIMESpider(scrapy.Spider):
             try:
                 issue_number = issue_url.split('/')[-1]
             except Exception as ex:
+                print(342)
                 print(ex)
                 issue_number = '1'
             issue_comment_user_type = repos_per_data['author_association']
@@ -338,13 +365,19 @@ class MOOSE_TIMESpider(scrapy.Spider):
                 core_issue_comment = 0
 
             user_id = repos_per_data['user']['id']
+            user_login = repos_per_data['user']['login']
             # statistic user
-            user_exit = self.is_user_exit(repos_per_data['user']['id'])
-            if (user_exit == 1):
-                pass
-            else:
-                owner_url = repos_per_data['user']['url']
-                yield scrapy.Request(owner_url, meta={"user_type": issue_comment_user_type, "oss_id": oss_id}, callback=self.user_parse, headers=getHeader())
+
+            # user_exit = self.is_user_exit(repos_per_data['user']['id'])
+            # if (user_exit == 1):
+            #     User_Info_Repo_item = MOOSEUserRepo()
+            #     User_Info_Repo_item['user_id'] = repos_per_data['user']['id']
+            #     User_Info_Repo_item['oss_id'] = oss_id
+            #     User_Info_Repo_item['user_type'] = issue_comment_user_type
+            #     yield User_Info_Repo_item
+            # else:
+            #     owner_url = repos_per_data['user']['url']
+            #     yield scrapy.Request(owner_url, meta={"user_type": issue_comment_user_type, "oss_id": oss_id}, callback=self.user_parse, headers=getHeader())
             body = [
                 {
                     "measurement": "moose_issue_comment",
@@ -359,8 +392,8 @@ class MOOSE_TIMESpider(scrapy.Spider):
                         "body": issue_comment_body,
                         "polarity": polarity,
                         "user_id": user_id,
-                        "issue_number": issue_number
-
+                        "issue_number": issue_number,
+                        "user_name":user_login
                     },
                 }
             ]
@@ -389,18 +422,21 @@ class MOOSE_TIMESpider(scrapy.Spider):
                     self.cursor.execute(update_sql, (str(pull_id_last), str(pull_time_last), str(oss_id)))
                     self.dbObject.commit()
                 except Exception as ex:
+                    print(407)
                     print(ex)
-                    pass
         finish = 0
         for repos_per_data in repos_data:
             try:
                 pull_id_current = repos_per_data['id']
-                pull_no = repos_per_data['number']
+                pull_no = str(repos_per_data['number'])
                 if int(self.oss_event_id[oss_id][2]) != 0 and int(self.oss_event_id[oss_id][2]) >= int(pull_id_current):
-                    pass
                     finish = 1
                     break
                 create_time = repos_per_data['created_at']
+                d1 = datetime.datetime.strptime(str(create_time[0:10]), self.fmt)
+                if d1 < self.early_date:
+                    finish = 1
+                    break
                 title = repos_per_data['title']
                 pull_body = repos_per_data['body']
                 if pull_body is None:
@@ -473,6 +509,8 @@ class MOOSE_TIMESpider(scrapy.Spider):
                             core_review_count += 1
                         review_date = review['submitted_at']
                         review_id = review['id']
+                        user_id = review['user']['id']
+                        user_login = review['user']['login']
                         body = [
                             {
                                 "measurement": "moose_review",
@@ -484,7 +522,9 @@ class MOOSE_TIMESpider(scrapy.Spider):
                                     "review_id": review_id
                                 },
                                 "fields": {
-                                    "user_type":review_user_type
+                                    "user_type": review_user_type,
+                                    "user_id": user_id,
+                                    "user_name": user_login
                                 }
                             }
                         ]
@@ -510,6 +550,8 @@ class MOOSE_TIMESpider(scrapy.Spider):
                             review_comment_date = review_comment['created_at']
                             review_comment_id = review_comment['id']
                             review_id = review_comment['pull_request_review_id']
+                            user_id = review_comment['user']['id']
+                            user_login = review_comment['user']['login']
                             body = [
                                 {
                                     "measurement": "moose_review_comment",
@@ -522,7 +564,9 @@ class MOOSE_TIMESpider(scrapy.Spider):
                                         "review_id": review_id
                                     },
                                     "fields": {
-                                        "user_type": review_comment_user_type
+                                        "user_type": review_comment_user_type,
+                                        "user_id": user_id,
+                                        "user_name": user_login
                                     }
                                 }
                             ]
@@ -532,13 +576,20 @@ class MOOSE_TIMESpider(scrapy.Spider):
                 s = requests.session()
                 s.keep_alive = False
                 # statistic user
-                user_exit = self.is_user_exit(repos_per_data['user']['id'])
-                if (user_exit == 1):
-                    pass
-                else:
-                    owner_url = repos_per_data['user']['url']
-                    yield scrapy.Request(owner_url, meta={"user_type": pull_user_type, "oss_id": oss_id}, callback=self.user_parse, headers=getHeader())
+
+                # user_exit = self.is_user_exit(repos_per_data['user']['id'])
+                # if (user_exit == 1):
+                #     User_Info_Repo_item = MOOSEUserRepo()
+                #     User_Info_Repo_item['user_id'] = repos_per_data['user']['id']
+                #     User_Info_Repo_item['oss_id'] = oss_id
+                #     User_Info_Repo_item['user_type'] = pull_user_type
+                #     yield User_Info_Repo_item
+                # else:
+                #     owner_url = repos_per_data['user']['url']
+                #     yield scrapy.Request(owner_url, meta={"user_type": pull_user_type, "oss_id": oss_id}, callback=self.user_parse, headers=getHeader())
+
                 user_id = repos_per_data['user']['id']
+                user_login = repos_per_data['user']['login']
 
                 body = [
                     {
@@ -547,30 +598,34 @@ class MOOSE_TIMESpider(scrapy.Spider):
                         "tags": {
                             "oss_id": oss_id,
                             "community_id": self.community_id[oss_id],
-                            "pull_id": pull_id_current
+                            "pull_id": pull_id_current,
+                            "pull_no":pull_no
                         },
                         "fields": {
                             "core_pull": core_pull,
                             "pull_state": pull_state,
                             "pull_merged": pull_merged,
-                            "pull_reviewed": 0,#pull_reviewed,
+                            "pull_reviewed": pull_reviewed,
                             "title": title,
                             "body": pull_body,
-                            "pull_comment_count": 0,#pull_comment_count,
-                            "pull_review_comment_count": 0,#pull_review_comment_count,
+                            "pull_comment_count": pull_comment_count,
+                            "pull_review_comment_count": pull_review_comment_count,
                             "close_time": close_time,
                             "merged_time": merged_time,
                             "user_id": user_id,
-                            "core_review_count": 0,#core_review_count,
-                            "core_review_comment_count": 0#core_review_comment_count
+                            "core_review_count": core_review_count,
+                            "core_review_comment_count": core_review_comment_count,
+                            "user_name":user_login
                         },
                     }
                 ]
                 res = self.client.write_points(body)
             except Exception as ex:
+                print(595)
                 print(ex)
         if finish != 1:
             listLink_next_url = re.findall(r'(?<=<).[^<]*(?=>; rel=\"next)', str(repos_header))
+            #print(len(listLink_next_url))
             if len(listLink_next_url) > 0:
                 yield scrapy.Request(listLink_next_url[0], meta={"is_first": 2, "oss_id": oss_id, "pull_url": pull_url}, callback=self.parse_pullrequest, headers=getHeader())
 
@@ -599,7 +654,6 @@ class MOOSE_TIMESpider(scrapy.Spider):
                 event_id_current = per_event['id']
                 oss_id = per_event['repo']['id']
                 if int(self.oss_event_id[oss_id][0]) != 0 and int(self.oss_event_id[oss_id][0]) >= int(event_id_current):
-                    pass
                     finish = 1
                     break
 
@@ -611,8 +665,10 @@ class MOOSE_TIMESpider(scrapy.Spider):
                     action = 'none'
                 try:
                     event_user = per_event['actor']['id']
+                    user_login = per_event['actor']['login']
                 except:
                     event_user = 0
+                    user_login = ''
                 #all event
                 body = [
                     {
@@ -626,7 +682,8 @@ class MOOSE_TIMESpider(scrapy.Spider):
                         },
                         "fields": {
                             "action": action,
-                            "user_id": event_user
+                            "user_id": event_user,
+                            "user_name": user_login
                         },
                     }
                 ]
@@ -672,6 +729,7 @@ class MOOSE_TIMESpider(scrapy.Spider):
                     yield scrapy.Request(listLink_next_url[0], meta={"is_first": 2,"oss_id": oss_id}, callback=self.parse_event,
                                          headers=getHeader())
         except Exception as ex:
+            print(701)
             print(ex)
 
     def parse_commit(self, response):
@@ -682,23 +740,33 @@ class MOOSE_TIMESpider(scrapy.Spider):
             is_first = response.meta['is_first']
         except Exception as ex:
             is_first = 1
+        commit_node_last = ''
+        commit_time_last = ''
         if is_first == 1:
             if len(repos_data) > 0:
                 commit_node_last = repos_data[0]['node_id']
                 commit_time_last = repos_data[0]['commit']['author']['date']
-                # store latest commit id
-                try:
-                    update_sql = "update moose_event_id set commit_id = %s , commit_time= %s where oss_id=%s"
-                    self.cursor.execute(update_sql, (str(commit_node_last), str(commit_time_last), str(oss_id)))
-                    self.dbObject.commit()
-                except:
-                    pass
+                # # store latest commit id
+                # try:
+                #     update_sql = "update moose_event_id set commit_id = %s , commit_time= %s where oss_id=%s"
+                #     self.cursor.execute(update_sql, (str(commit_node_last), str(commit_time_last), str(oss_id)))
+                #     self.dbObject.commit()
+                # except Exception as ex:
+                #     print(717)
+                #     print(ex)
         finish = 0
         for repos_per_data in repos_data:
             commit_node = repos_per_data['node_id']
             commit_time = repos_per_data['commit']['author']['date']
+            if is_first==1 and commit_time>commit_time_last:
+                # print("update commit ")
+                commit_node_last=commit_node
+                commit_time_last=commit_time
+            d1 = datetime.datetime.strptime(str(commit_time[0:10]), self.fmt)
+            if d1 < self.early_date:
+                finish = 1
+                break
             if self.oss_event_id[oss_id][3] != 0 and self.oss_event_id[oss_id][3] >= commit_time:
-                pass
                 finish = 1
                 break
             message = repos_per_data['commit']['message']
@@ -728,6 +796,16 @@ class MOOSE_TIMESpider(scrapy.Spider):
                 }
             ]
             res = self.client.write_points(body)
+        if is_first==1 and commit_node_last!='' and commit_time_last!='':
+            # print(commit_node_last,commit_time_last)
+            # store latest commit id
+            try:
+                update_sql = "update moose_event_id set commit_id = %s , commit_time= %s where oss_id=%s"
+                self.cursor.execute(update_sql, (str(commit_node_last), str(commit_time_last), str(oss_id)))
+                self.dbObject.commit()
+            except Exception as ex:
+                print(717)
+                print(ex)
         if finish != 1:
             listLink_next_url = re.findall(r'(?<=<).[^<]*(?=>; rel=\"next)', str(repos_header))
             if len(listLink_next_url) > 0:
@@ -740,9 +818,9 @@ class MOOSE_TIMESpider(scrapy.Spider):
         #从最后一页爬取
         if repos_data=='' or len(repos_data)==0:
             listLink_next_url = re.findall(r'(?<=<).[^<]*(?=>; rel=\"prev)', str(repos_header))
-            if len(listLink_next_url) > 0: yield scrapy.Request(listLink_next_url[0],
-                                                                meta={"is_first": 1, "oss_id": oss_id},
-                                                                callback=self.parse_commit_comment, headers=getHeader())
+            if len(listLink_next_url) > 0:
+                scrapy.Request(listLink_next_url[0],meta={"is_first": 1, "oss_id": oss_id},
+                    callback=self.parse_commit_comment, headers=getHeader())
 
 
         try:
@@ -758,29 +836,34 @@ class MOOSE_TIMESpider(scrapy.Spider):
                     update_sql = "update moose_event_id set comment_id = %s , comment_time= %s where oss_id=%s"
                     self.cursor.execute(update_sql, (str(comment_id_last), str(comment_time_last), str(oss_id)))
                     self.dbObject.commit()
-                except:
-                    pass
+                except Exception as ex:
+                    print(784)
+                    print(ex)
         finish = 0
         for i in range(len(repos_data)-1, -1, -1):
             comment_id = repos_data[i]['id']
             comment_time = repos_data[i]['created_at']
+            d1 = datetime.datetime.strptime(str(comment_time[0:10]), self.fmt)
+            if d1 < self.early_date:
+                finish = 1
+                break
             if int(self.oss_event_id[oss_id][4]) != 0 and int(self.oss_event_id[oss_id][4]) >= int(comment_id):
-                pass
                 finish = 1
                 break
             commment_body = repos_data[i]['body']
             if commment_body is None:
                 commment_body = ''
             commit_comment_user_type = repos_data[i]['author_association']
-            if commit_comment_user_type == 'M' \
-                                           'EMBER' or commit_comment_user_type == 'COLLABORATOR':
+            if commit_comment_user_type == 'MEMBER' or commit_comment_user_type == 'COLLABORATOR':
                 core_commit_comment = 1
             else:
                 core_commit_comment = 0
             try:
                 user_id = repos_data[i]['user']['id']
+                user_login = repos_data[i]['user']['login']
             except:
                 user_id = 0
+                user_login = ''
             body = [
                 {
                     "measurement": "moose_comment",
@@ -794,13 +877,15 @@ class MOOSE_TIMESpider(scrapy.Spider):
                         "body": commment_body,
                         "user_id": user_id,
                         "core_commit_comment": core_commit_comment,
+                        "user_name":user_login
                     },
                 }
             ]
             res = self.client.write_points(body)
         if finish != 1:
             listLink_next_url = re.findall(r'(?<=<).[^<]*(?=>; rel=\"prev)', str(repos_header))
-            if len(listLink_next_url) > 0: yield scrapy.Request(listLink_next_url[0], meta={"is_first": 2, "oss_id": oss_id}, callback=self.parse_commit_comment, headers=getHeader())
+            if len(listLink_next_url) > 0:
+                yield scrapy.Request(listLink_next_url[0], meta={"is_first": 2, "oss_id": oss_id}, callback=self.parse_commit_comment, headers=getHeader())
 
     def parse_fork(self, response):
         repos_data = json.loads(response.body.decode('utf-8'))
@@ -819,17 +904,20 @@ class MOOSE_TIMESpider(scrapy.Spider):
                     update_sql = "update moose_event_id set fork_id = %s , fork_time= %s where oss_id=%s"
                     self.cursor.execute(update_sql, (str(fork_id_last), str(fork_time_last), str(oss_id)))
                     self.dbObject.commit()
-                except:
-                    pass
+                except Exception as ex:
+                    print(845)
+                    print(ex)
+
         finish = 0
         for repos_per_data in repos_data:
             fork_id = repos_per_data['id']
             fork_time = repos_per_data['created_at']
             if int(self.oss_event_id[oss_id][6]) != 0 and int(self.oss_event_id[oss_id][6]) >= int(fork_id):
-                pass
                 finish = 1
                 break
             fork_full_name = repos_per_data['full_name']
+            user_id = repos_per_data['owner']['id']  ##########2021-08-22
+            user_login = repos_per_data['owner']['login']
             body = [
                 {
                     "measurement": "moose_fork",
@@ -841,6 +929,8 @@ class MOOSE_TIMESpider(scrapy.Spider):
                     },
                     "fields": {
                         "fullname": fork_full_name,
+                        "user_id":user_id,
+                        "user_name":user_login
                     },
                 }
             ]
@@ -876,7 +966,8 @@ class MOOSE_TIMESpider(scrapy.Spider):
             res = self.client.write_points(body)
 
         listLink_next_url = re.findall(r'(?<=<).[^<]*(?=>; rel=\"next)', str(repos_header))
-        if len(listLink_next_url) > 0: yield scrapy.Request(listLink_next_url[0], meta={"oss_id": oss_id}, callback=self.parse_star, headers=getHeader2())
+        if len(listLink_next_url) > 0:
+            yield scrapy.Request(listLink_next_url[0], meta={"oss_id": oss_id}, callback=self.parse_star, headers=getHeader2())
 
     def user_parse(self, response):
         oss_id = response.meta['oss_id']

@@ -1,0 +1,4 @@
+openharmony/multimedia_utils_lite	11218502
+LiteOS/LiteOS	7332091
+LiteOS/LiteOS_Components	13030523
+LiteOS/LiteOS_Studio	9867051
